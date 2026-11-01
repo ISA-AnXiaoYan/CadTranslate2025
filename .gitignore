@@ -21,5 +21,16 @@ runs/
 outputs/
 private/
 translation_memory.json
+preview_text_cache.json
+preview_extract.json
+preview_plan.json
+preview_translation_summary.json
+terminology.json
+!examples/terminology.json
+ole_inputs.json
+staging/
+preview_inputs/
+preview_outputs/
+ole-v1/
 **/*.cadtrans.*.json
 **/*.translation.log.jsonl

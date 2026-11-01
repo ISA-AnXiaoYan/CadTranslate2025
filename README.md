@@ -2,7 +2,7 @@
 
 Windows / AutoCAD 2025 DWG text translation components, with DeepSeek, local translation memory and copy-only output. MIT licensed source code; Autodesk and Office software remain separately licensed prerequisites.
 
-This initial source release contains a working AutoCAD plugin plus experimental native OLE components. It is not a turnkey packaged release of the later project-specific multilingual orchestration. No drawings, customer terminology, translated documents, API credentials, Autodesk assemblies or Microsoft fonts are distributed.
+This source release contains a working AutoCAD plugin, generalized multilingual headless components and experimental native OLE components. Private project orchestration and customer data are not distributed; this is not a turnkey packaged release. No drawings, customer terminology, translated documents, API credentials, Autodesk assemblies or Microsoft fonts are distributed.
 
 ## Build
 
@@ -23,9 +23,11 @@ Background options: `CADTRANS_OUTPUT_ROOT`, `CADTRANS_CACHE_PATH`, `CADTRANS_MAX
 ## Scope and limitations
 
 - Native DBText, MText, attributes and supported MLeader content are handled. File success must be checked against object readback, not just process exit codes or `applied` status.
-- The baseline plugin prompt supports English/Chinese. Multilingual-to-Chinese and corpus-wide terminology approval were validated in a separate local pipeline and are not yet integrated into this baseline command interface.
+- The baseline plugin prompt supports English/Chinese. `HeadlessBatch` and `TranslationWorker` expose the separate multilingual-to-Chinese workflow; see [headless configuration](docs/HEADLESS.md). They are not integrated into the baseline command interface.
 - XREF source editing, AEC/proxy text, raster OCR and automatic layout are not implemented. Treat unsupported content as explicit coverage gaps.
 - OLE workbook editing requires a registered local Office-compatible OLE server. `OleWorkbookWorker` takes a disposable `.ole` storage copy and a translation plan JSON; it checks formulas and numeric values on the active sheet and refreshes the OLE presentation cache. It does not itself write a DWG.
 - `NativeOle/MemoryFiler.cs` is an experimental CopyFiler implementation for native object serialization. FileFiler mode is unsupported. Do not use it on irreplaceable drawings without independent readback validation.
 
 See [lessons learned](docs/LESSONS_LEARNED.md) for the workflow and failure modes that informed this release.
+
+中文说明：[后台批量翻译经验总结](docs/经验总结.md)。
