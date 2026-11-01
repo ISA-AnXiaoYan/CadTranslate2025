@@ -1,0 +1,4 @@
+zh,en,aliases,match_mode,locked,project,notes
+风机盘管,fan coil unit,FCU,phrase,true,generic,Keep equipment identifiers unchanged
+空气处理机组,air handling unit,AHU,phrase,true,generic,Apply meaning only in an appropriate legend
+无障碍卫生间,accessible toilet,disabled WC,phrase,true,generic,Example terminology
