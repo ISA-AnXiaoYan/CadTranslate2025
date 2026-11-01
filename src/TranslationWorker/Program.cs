@@ -16,8 +16,7 @@ var fixedItems=terms.RootElement.GetProperty("ConfirmedInferences").EnumerateArr
 var glossary=terms.RootElement.GetProperty("Terms").EnumerateArray().Select(t=>new {source=t.GetProperty("Sources").EnumerateArray().Select(x=>x.GetString()).ToArray(),chinese=t.GetProperty("Chinese").GetString()}).ToArray();
 bool oleMode=false;
 var controls=new Regex(@"(\\[fFhHwWcCtTqQaApP][^;\\{}]*;|\\[PpXx~LlOoKk]|\\S[^;]*;|%%(?:\d+|[dDpPcCuUoO])|%<.*?>%|[{}])");
-var protectedPattern=new Regex(@"(?:[A-Za-z]+[\w-]*\d[\w./:+-]*|\d+(?:[.,:/+-]\d+)*(?:\s*(?:mm²|m²|mm2|m2|mm|cm|kg|kW|KW|kVA|kva|kV|Hz|hz|l/s|L/S|m3/h|m³/h|in|m|%))?|[Ø⌀])",RegexOptions.CultureInvariant);
-bool Needs(string s)=>Regex.IsMatch(s,@"[A-Za-z\p{IsArabic}\p{IsCyrillic}]")&&!(oleMode&&Regex.IsMatch(s.Trim(),@"^(R|Y|B|KW|kW|A|DF|DB|MCB|RCD|TP|SP|TPN)$"))&&!Regex.IsMatch(s.Trim(),@"^[\d\W_]*$|^[A-Z]{0,7}[-_]?\d[\w./:+ -]*$")&&!s.Contains("setq")&&!s.Contains("STYLE")&&!s.Contains("%<");
+bool Needs(string s)=>Regex.IsMatch(s,@"[A-Za-z\p{IsArabic}\p{IsCyrillic}]")&&!(oleMode&&Regex.IsMatch(s.Trim(),@"^(R|Y|B|KW|kW|A|DF|DB|MCB|RCD|TP|SP|TPN)$"))&&!Regex.IsMatch(s.Trim(),@"^[\d\W_]*$")&&!TextRules.IsIdentifier(s)&&!s.Contains("setq")&&!s.Contains("STYLE")&&!s.Contains("%<");
 var pending=new Dictionary<string,Req>(StringComparer.Ordinal);
 var plans=new List<Plan>();
 foreach(var doc in samples)
@@ -32,7 +31,7 @@ foreach(var doc in samples)
   foreach(var part in parts.Where(s=>!controls.IsMatch(s)&&Needs(s)))
   {
    var key=part.Trim();if(pending.ContainsKey(key))continue;
-   var values=new List<string>();var masked=protectedPattern.Replace(key,m=>{var token=$"__KEEP{values.Count}__";values.Add(m.Value);return token;});
+   var values=new List<string>();var masked=TextRules.Mask(key,values);
    if(!Regex.IsMatch(Regex.Replace(masked,@"__KEEP\d+__",""),@"[A-Za-z\p{IsArabic}\p{IsCyrillic}]"))continue;
    var id=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..20];
    pending.Add(key,new(id,key,masked,values.ToArray()));
@@ -44,6 +43,8 @@ foreach(var doc in samples)
 var cache=new ConcurrentDictionary<string,string>(StringComparer.Ordinal);
 var cachePath=Path.Combine(workRoot,"preview_text_cache.json");
 if(File.Exists(cachePath))foreach(var p in JsonSerializer.Deserialize<Dictionary<string,string>>(File.ReadAllText(cachePath))!)cache[p.Key]=p.Value;
+// Old caches may contain untranslated room labels from the identifier bug.
+foreach(var p in cache.ToArray())if(p.Key==p.Value&&(TextRules.IsRoomLabel(p.Key)||Regex.IsMatch(p.Key,@"^\d+\s*[-_/]\s*[\p{IsArabic}\p{IsCyrillic}]")))cache.TryRemove(p.Key,out _);
 var apiKey=Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY",EnvironmentVariableTarget.User);
 if(string.IsNullOrWhiteSpace(apiKey))throw new Exception("User API key missing");
 using var http=new HttpClient{BaseAddress=new Uri("https://api.deepseek.com/"),Timeout=TimeSpan.FromMinutes(3)};

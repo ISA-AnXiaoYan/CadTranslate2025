@@ -15,6 +15,8 @@ Build `src/HeadlessBatch/HeadlessBatch.csproj` with `AutoCAD2025Dir`, and `src/T
 
 `preview_text_cache.json` is private state. Archive it with the glossary version and input hash manifest; do not reuse an unreviewed cache across unrelated disciplines.
 
+The worker distinguishes numbered room labels from ASCII equipment identifiers. Regression checks are available with `dotnet run --project tests/TextRulesChecks -c Release`. Apply an approved canonical terminology pass to both native and OLE plans before writeback, including spelling aliases and compound labels. The model prompt alone does not enforce that acceptance criterion. When correcting a cache, retain the old version and propagate only reviewed replacements, with scope and uncertainty recorded.
+
 ## Experimental OLE path
 
 Create private `ole_inputs.json`, an array of absolute paths to translated DWG copies. `CTBATCHOLEEXPORT` writes `ole-v1/batch_objects.json` and per-object DXFs for storage extraction. The exported DXF is an inspection carrier, not a file to import back into the drawing.
