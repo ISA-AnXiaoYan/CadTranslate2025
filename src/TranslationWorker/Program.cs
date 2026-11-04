@@ -14,9 +14,18 @@ if(samples.Count<1)throw new Exception("Input document list is empty");
 var terms=JsonDocument.Parse(File.ReadAllText(Path.Combine(root,"terminology.json")));
 var fixedItems=terms.RootElement.GetProperty("ConfirmedInferences").EnumerateArray().ToArray();
 var glossary=terms.RootElement.GetProperty("Terms").EnumerateArray().Select(t=>new {source=t.GetProperty("Sources").EnumerateArray().Select(x=>x.GetString()).ToArray(),chinese=t.GetProperty("Chinese").GetString()}).ToArray();
-bool oleMode=false;
-var controls=new Regex(@"(\\[fFhHwWcCtTqQaApP][^;\\{}]*;|\\[PpXx~LlOoKk]|\\S[^;]*;|%%(?:\d+|[dDpPcCuUoO])|%<.*?>%|[{}])");
-bool Needs(string s)=>Regex.IsMatch(s,@"[A-Za-z\p{IsArabic}\p{IsCyrillic}]")&&!(oleMode&&Regex.IsMatch(s.Trim(),@"^(R|Y|B|KW|kW|A|DF|DB|MCB|RCD|TP|SP|TPN)$"))&&!Regex.IsMatch(s.Trim(),@"^[\d\W_]*$")&&!TextRules.IsIdentifier(s)&&!s.Contains("setq")&&!s.Contains("STYLE")&&!s.Contains("%<");
+var canonical=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+foreach(var group in glossary)
+foreach(var source in group.source)
+{
+    if(string.IsNullOrWhiteSpace(source)||string.IsNullOrWhiteSpace(group.chinese))
+        throw new InvalidOperationException("Empty approved glossary source or target");
+    if(canonical.TryGetValue(source.Trim(),out var previous)&&previous!=group.chinese)
+        throw new InvalidOperationException("Conflicting approved glossary aliases");
+    canonical[source.Trim()]=group.chinese;
+}
+var controls=new Regex(@"(\\[fFhHwWcCtTqQap][^;\\{}]*;|\\[PXx~LlOoKk]|\\S[^;]*;|%%(?:\d{3}|[dDpPcCuUoO])|%<.*?>%|[{}])");
+bool Needs(string s)=>Regex.IsMatch(s,@"[A-Za-z\p{IsArabic}\p{IsCyrillic}]")&&!Regex.IsMatch(s.Trim(),@"^[\d\W_]*$")&&!TextRules.IsIdentifier(s);
 var pending=new Dictionary<string,Req>(StringComparer.Ordinal);
 var plans=new List<Plan>();
 foreach(var doc in samples)
@@ -25,18 +34,29 @@ foreach(var doc in samples)
  foreach(var row in doc.Rows.Where(r=>r.Reachable&&r.Visible))
  {
   if(row.Raw.Contains("setq")||row.Raw.Contains("((0 .")||row.Raw.Contains("%<"))continue;
-  var special=fixedItems.FirstOrDefault(x=>x.GetProperty("File").GetString()==doc.File&&x.GetProperty("Locations").EnumerateArray().Any(l=>l.GetProperty("Handle").GetString()==row.Handle));
-  if(special.ValueKind!=JsonValueKind.Undefined){entries.Add(new(row.Handle,row.Kind,row.Raw,special.GetProperty("Output").GetString()!,null));continue;}
+  var rowIndex=row.RowNumber;
+  var columnIndex=row.Column;
+  if(row.Kind=="Table" && (rowIndex==null||columnIndex==null))
+  {
+   var coordinates=Regex.Match(row.Location??"",@"/cell:(\d+),(\d+)$");
+   if(!coordinates.Success)throw new InvalidOperationException("Table row has no cell address");
+   rowIndex=int.Parse(coordinates.Groups[1].Value);
+   columnIndex=int.Parse(coordinates.Groups[2].Value);
+  }
+  var special=fixedItems.FirstOrDefault(x=>x.GetProperty("File").GetString()==doc.File&&x.GetProperty("Locations").EnumerateArray().Any(l=>
+    l.GetProperty("Handle").GetString()==row.Handle &&
+    (row.Kind!="Table" || l.TryGetProperty("Row",out var r)&&r.GetInt32()==rowIndex && l.TryGetProperty("Column",out var c)&&c.GetInt32()==columnIndex)));
+  if(special.ValueKind!=JsonValueKind.Undefined){entries.Add(new(row.Handle,row.Kind,row.Raw,special.GetProperty("Output").GetString()!,null,rowIndex,columnIndex));continue;}
   var parts=controls.Split(row.Raw);
   foreach(var part in parts.Where(s=>!controls.IsMatch(s)&&Needs(s)))
   {
-   var key=part.Trim();if(pending.ContainsKey(key))continue;
+   var key=part.Trim();if(pending.ContainsKey(key)||canonical.ContainsKey(key))continue;
    var values=new List<string>();var masked=TextRules.Mask(key,values);
    if(!Regex.IsMatch(Regex.Replace(masked,@"__KEEP\d+__",""),@"[A-Za-z\p{IsArabic}\p{IsCyrillic}]"))continue;
    var id=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..20];
    pending.Add(key,new(id,key,masked,values.ToArray()));
   }
-  entries.Add(new(row.Handle,row.Kind,row.Raw,null,parts));
+  entries.Add(new(row.Handle,row.Kind,row.Raw,null,parts,rowIndex,columnIndex));
  }
  plans.Add(new(doc.File,entries));
 }
@@ -45,10 +65,11 @@ var cachePath=Path.Combine(workRoot,"preview_text_cache.json");
 if(File.Exists(cachePath))foreach(var p in JsonSerializer.Deserialize<Dictionary<string,string>>(File.ReadAllText(cachePath))!)cache[p.Key]=p.Value;
 // Old caches may contain untranslated room labels from the identifier bug.
 foreach(var p in cache.ToArray())if(p.Key==p.Value&&(TextRules.IsRoomLabel(p.Key)||Regex.IsMatch(p.Key,@"^\d+\s*[-_/]\s*[\p{IsArabic}\p{IsCyrillic}]")))cache.TryRemove(p.Key,out _);
+var requests=pending.Values.Where(b=>!cache.ContainsKey(b.Source)).ToArray();
 var apiKey=Environment.GetEnvironmentVariable("DEEPSEEK_API_KEY",EnvironmentVariableTarget.User);
-if(string.IsNullOrWhiteSpace(apiKey))throw new Exception("User API key missing");
+if(requests.Length>0&&string.IsNullOrWhiteSpace(apiKey))throw new Exception("User API key missing");
 using var http=new HttpClient{BaseAddress=new Uri("https://api.deepseek.com/"),Timeout=TimeSpan.FromMinutes(3)};
-http.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Bearer",apiKey);
+if(requests.Length>0)http.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Bearer",apiKey);
 long promptTokens=0,completionTokens=0;int calls=0;
 var errors=new ConcurrentBag<string>();var saveLock=new object();
 async Task Translate(Req[] batch)
@@ -73,10 +94,10 @@ async Task Translate(Req[] batch)
     if(item.GetProperty("id").ValueKind!=JsonValueKind.String||item.GetProperty("target").ValueKind!=JsonValueKind.String)continue;
     var b=batch.FirstOrDefault(b=>b.Id==item.GetProperty("id").GetString());if(b==null)continue;
     string target=item.GetProperty("target").GetString()!;
-    if(b.Values.Where((v,i)=>Regex.Matches(target,Regex.Escape($"__KEEP{i}__")).Count!=1).Any())continue;
-    if(Regex.Matches(target,@"__KEEP\d+__").Count!=b.Values.Length)continue;
+    var returnedTokens=Regex.Matches(target,@"__KEEP\d+__").Select(m=>m.Value);
+    if(!returnedTokens.SequenceEqual(Enumerable.Range(0,b.Values.Length).Select(i=>$"__KEEP{i}__")))continue;
     for(int i=0;i<b.Values.Length;i++)target=target.Replace($"__KEEP{i}__",b.Values[i]);
-    if(string.IsNullOrWhiteSpace(target))continue;
+    if(string.IsNullOrWhiteSpace(target)||controls.IsMatch(target))continue;
     cache[b.Source]=target;
    }
    lock(saveLock){File.WriteAllText(cachePath+".tmp",JsonSerializer.Serialize(cache,options));File.Move(cachePath+".tmp",cachePath,true);}
@@ -85,24 +106,45 @@ async Task Translate(Req[] batch)
   catch(Exception ex){if(attempt==2){errors.Add(ex.GetType().Name);return;}await Task.Delay(1000*(attempt+1));}
  }
 }
-var requests=pending.Values.Where(b=>!cache.ContainsKey(b.Source)).ToArray();
 Console.WriteLine($"sample_files={samples.Count},unique_fragments={pending.Count},api_pending={requests.Length}");
-await Parallel.ForEachAsync(requests.Chunk(24),new ParallelOptions{MaxDegreeOfParallelism=Math.Clamp(int.TryParse(Environment.GetEnvironmentVariable("CADTRANS_MAX_API_CONCURRENCY"),out var concurrency)?concurrency:8,1,50)},async(batch,ct)=>await Translate(batch));
-await Parallel.ForEachAsync(pending.Values.Where(b=>!cache.ContainsKey(b.Source)).ToArray(),new ParallelOptions{MaxDegreeOfParallelism=4},async(b,ct)=>await Translate(new[]{b}));
+int concurrency=Math.Clamp(int.TryParse(Environment.GetEnvironmentVariable("CADTRANS_MAX_API_CONCURRENCY"),out var requested)?requested:8,1,50);
+await Parallel.ForEachAsync(requests.Chunk(24),new ParallelOptions{MaxDegreeOfParallelism=concurrency},async(batch,ct)=>await Translate(batch));
+await Parallel.ForEachAsync(pending.Values.Where(b=>!cache.ContainsKey(b.Source)).ToArray(),new ParallelOptions{MaxDegreeOfParallelism=Math.Min(4,concurrency)},async(b,ct)=>await Translate(new[]{b}));
 var missing=pending.Keys.Where(k=>!cache.ContainsKey(k)).ToArray();
 foreach(var plan in plans)
 {
  foreach(var entry in plan.Entries)
  {
   if(entry.Target!=null)continue;
-  entry.Target=string.Concat(entry.Parts!.Select(s=>{var t=s.Trim();return cache.TryGetValue(t,out var translated)?s[..(s.Length-s.TrimStart().Length)]+translated+s[s.TrimEnd().Length..]:s;}));
+  entry.Target=string.Concat(entry.Parts!.Select(s=>
+  {
+   if(controls.IsMatch(s))return s;
+   var key=s.Trim();
+   if(!canonical.TryGetValue(key,out var translated)&&(!pending.ContainsKey(key)||!cache.TryGetValue(key,out translated)))return s;
+   return s[..(s.Length-s.TrimStart().Length)]+translated+s[s.TrimEnd().Length..];
+  }));
+  entry.Parts=null;
  }
 }
 File.WriteAllText(Path.Combine(workRoot,"preview_plan.json"),JsonSerializer.Serialize(plans,options));
-File.WriteAllText(Path.Combine(workRoot,"preview_translation_summary.json"),JsonSerializer.Serialize(new{Files=samples.Count,UniqueFragments=pending.Count,Accepted=cache.Count,Unresolved=missing,Calls=calls,PromptTokens=promptTokens,CompletionTokens=completionTokens,Errors=errors.ToArray()},options));
+File.WriteAllText(Path.Combine(workRoot,"preview_translation_summary.json"),JsonSerializer.Serialize(new{Files=samples.Count,UniqueFragments=pending.Count,Accepted=pending.Count-missing.Length,Unresolved=missing,Calls=calls,PromptTokens=promptTokens,CompletionTokens=completionTokens,Errors=errors.ToArray()},options));
 Console.WriteLine($"FINISHED unresolved={missing.Length},calls={calls}");
+Environment.ExitCode=missing.Length==0?0:1;
 record Doc(string File,List<Row> Rows);
-record Row(string Handle,string Kind,string Raw,bool Reachable,bool Visible);
+record Row(string Handle,string Kind,string Raw,bool Reachable,bool Visible,string? Location=null,int? Column=null)
+{
+ [System.Text.Json.Serialization.JsonPropertyName("Row")]
+ public int? RowNumber{get;init;}
+}
 record Req(string Id,string Source,string Masked,string[] Values);
 record Plan(string File,List<Entry> Entries);
-class Entry(string handle,string kind,string source,string? target,string[]? parts){public string Handle{get;set;}=handle;public string Kind{get;set;}=kind;public string Source{get;set;}=source;public string? Target{get;set;}=target;public string[]? Parts{get;set;}=parts;}
+class Entry(string handle,string kind,string source,string? target,string[]? parts,int? row,int? column)
+{
+ public string Handle{get;set;}=handle;
+ public string Kind{get;set;}=kind;
+ public string Source{get;set;}=source;
+ public string? Target{get;set;}=target;
+ public string[]? Parts{get;set;}=parts;
+ public int? Row{get;set;}=row;
+ public int? Column{get;set;}=column;
+}

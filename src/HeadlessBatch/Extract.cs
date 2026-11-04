@@ -14,6 +14,8 @@ public class Extract
         foreach (var path in inputs)
         {
             var rows = new List<object>(); var issues = new List<string>();
+            var references = new List<object>();
+            var protectedContent = new List<object>();
             int xrefs=0, tables=0, proxies=0;
             var types=new Dictionary<string,int>(); var reachable=new HashSet<ObjectId>();
             try
@@ -21,6 +23,12 @@ public class Extract
                 using var db = new Database(false,true);
                 db.ReadDwgFile(path,FileOpenMode.OpenForReadAndAllShare,false,null);
                 using var tx = db.TransactionManager.StartTransaction();
+                var layerLocks=new Dictionary<string,bool>();
+                foreach(ObjectId layerId in (LayerTable)tx.GetObject(db.LayerTableId,OpenMode.ForRead))
+                {
+                    var layer=(LayerTableRecord)tx.GetObject(layerId,OpenMode.ForRead);
+                    layerLocks[layer.Name]=layer.IsLocked;
+                }
                 void Visit(ObjectId bid)
                 {
                     if(!reachable.Add(bid))return;
@@ -31,7 +39,7 @@ public class Extract
                 foreach(ObjectId bid in (BlockTable)tx.GetObject(db.BlockTableId,OpenMode.ForRead))
                     if(((BlockTableRecord)tx.GetObject(bid,OpenMode.ForRead)).IsLayout)Visit(bid);
                 var seen = new HashSet<string>();
-                void Add(Entity e, string text, string location)
+                void Add(Entity e, string text, string location, int? row = null, int? column = null)
                 {
                     if(string.IsNullOrWhiteSpace(text))return;
                     var plain=Regex.Replace(text.Replace("\\P"," "),@"\\[HhWwCcFfTtQqAa][^;{}]*;|[{}]","");
@@ -42,7 +50,7 @@ public class Extract
                     var owner=tx.GetObject(e.OwnerId,OpenMode.ForRead);
                     bool used=reachable.Contains(e.OwnerId)||(owner is BlockReference brOwner && reachable.Contains(brOwner.OwnerId));
                     bool eligible=e.Visible && (e is not AttributeDefinition ad || (ad.Constant && !ad.Invisible)) && (e is not AttributeReference ar || !ar.Invisible);
-                    rows.Add(new {Handle=e.Handle.ToString(),Kind=e.GetType().Name,Layer=e.Layer,Location=location,Raw=text,Text=plain,Reachable=used,Visible=eligible,X=pos.X,Y=pos.Y,MinX=minX,MinY=minY,MaxX=maxX,MaxY=maxY});
+                    rows.Add(new {Handle=e.Handle.ToString(),Kind=e.GetType().Name,Layer=e.Layer,Location=location,Row=row,Column=column,Raw=text,Text=plain,Reachable=used,Visible=eligible,X=pos.X,Y=pos.Y,MinX=minX,MinY=minY,MaxX=maxX,MaxY=maxY});
                 }
                 void Read(ObjectId id,string location)
                 {
@@ -58,7 +66,45 @@ public class Extract
                             case MLeader l when l.ContentType==ContentType.MTextContent:
                                 using(var m=l.MText){if(m!=null)Add(e,m.Contents,location);}break;
                             case Table t:
-                                tables++;for(int r=0;r<t.Rows.Count;r++)for(int c=0;c<t.Columns.Count;c++)Add(e,t.Cells[r,c].TextString,location+$"/cell:{r},{c}");break;
+                                tables++;
+                                for(int r=0;r<t.Rows.Count;r++)
+                                for(int c=0;c<t.Columns.Count;c++)
+                                {
+                                    var cell=t.Cells[r,c];
+                                    if(cell.Contents.Count==0)continue;
+                                    var content=cell.Contents[0];
+                                    if(cell.Contents.Count==1 && !content.HasFormula && content.FieldId.IsNull && content.BlockTableRecordId.IsNull)
+                                        Add(e,content.TextString,location+$"/cell:{r},{c}",r,c);
+                                    else if(reachable.Contains(e.OwnerId))
+                                        protectedContent.Add(new{Handle=e.Handle.ToString(),Kind="ProtectedTableCell",Row=r,Column=c,Count=cell.Contents.Count});
+                                }
+                                break;
+                            case MLeader leader when leader.ContentType==ContentType.BlockContent && reachable.Contains(e.OwnerId):
+                                if(!leader.BlockContentId.IsNull)
+                                {
+                                    var block=(BlockTableRecord)tx.GetObject(leader.BlockContentId,OpenMode.ForRead);
+                                    foreach(ObjectId child in block)
+                                    {
+                                        var definition=tx.GetObject(child,OpenMode.ForRead);
+                                        if(definition is AttributeDefinition)
+                                        {
+                                            using var attribute=leader.GetBlockAttribute(child);
+                                            if(attribute!=null)protectedContent.Add(new{Handle=e.Handle.ToString(),Kind="LeaderBlockAttribute",Definition=child.Handle.ToString(),Text=attribute.TextString});
+                                        }
+                                        else if(definition is DBText text)
+                                            protectedContent.Add(new{Handle=e.Handle.ToString(),Kind="LeaderBlockText",Definition=child.Handle.ToString(),Text=text.TextString});
+                                        else if(definition is MText blockText)
+                                            protectedContent.Add(new{Handle=e.Handle.ToString(),Kind="LeaderBlockText",Definition=child.Handle.ToString(),Text=blockText.Contents});
+                                    }
+                                }
+                                break;
+                            case Dimension dim when reachable.Contains(e.OwnerId) && !string.IsNullOrEmpty(dim.DimensionText):
+                                protectedContent.Add(new{Handle=e.Handle.ToString(),Kind="DimensionOverride",Text=dim.DimensionText});
+                                break;
+                            case RasterImage image when reachable.Contains(e.OwnerId):
+                                var def=image.ImageDefId.IsNull?null:tx.GetObject(image.ImageDefId,OpenMode.ForRead) as RasterImageDef;
+                                references.Add(new{Handle=e.Handle.ToString(),Kind="RasterImage",SourcePath=def?.SourceFileName});
+                                break;
                         }
                         if(e.GetType().Name.Contains("Proxy"))proxies++;
                         if(e is BlockReference br)foreach(ObjectId aid in br.AttributeCollection)Read(aid,location+"/attribute");
@@ -71,7 +117,7 @@ public class Extract
                     if(b.IsFromExternalReference||b.IsDependent){xrefs++;continue;}
                     foreach(ObjectId eid in b)Read(eid,b.Name);
                 }
-                reports.Add(new {File=Path.GetRelativePath(Path.Combine(root,"staging"),path),Rows=rows,Issues=issues,XrefBlocks=xrefs,Tables=tables,Proxies=proxies,EntityTypes=types});
+                reports.Add(new {File=Path.GetRelativePath(Path.Combine(root,"staging"),path),Rows=rows,Issues=issues,XrefBlocks=xrefs,Tables=tables,Proxies=proxies,EntityTypes=types,LayerLocks=layerLocks,References=references,ProtectedContent=protectedContent});
             }
             catch(System.Exception ex){reports.Add(new {File=path,Error=ex.ToString()});}
         }

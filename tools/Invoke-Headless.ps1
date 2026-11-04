@@ -3,7 +3,7 @@ param(
  [Parameter(Mandatory)][string]$WorkRoot,
  [Parameter(Mandatory)][string]$StagingHost,
  [Parameter(Mandatory)][string]$PluginDll,
- [Parameter(Mandatory)][ValidateSet('CADTRANS_HEADLESS_SCAN','CADTRANS_HEADLESS_APPLY','CTBATCHOLEEXPORT','CTBATCHOLEAPPLY')][string]$Command,
+ [Parameter(Mandatory)][ValidateSet('CADTRANS_HEADLESS_SCAN','CADTRANS_HEADLESS_APPLY','CTBATCHOLEEXPORT','CTBATCHOLEAPPLY','CTREPATHIMAGES')][string]$Command,
  [ValidateRange(10,3600)][int]$TimeoutSeconds=300
 )
 $ErrorActionPreference='Stop'

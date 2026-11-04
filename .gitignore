@@ -32,5 +32,15 @@ staging/
 preview_inputs/
 preview_outputs/
 ole-v1/
+console-sessions/
+readback-*/
+workflow.lock
+input_manifest.json
+preview_apply_report.json
+publish_receipt.json
+candidate_paths.json
+image_repath_manifest.json
+image_repath_report.json
+text_review.json
 **/*.cadtrans.*.json
 **/*.translation.log.jsonl
